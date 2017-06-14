@@ -2,6 +2,9 @@ import path from 'path';
 import fs from 'fs';
 import through from 'through2';
 import gutil from 'gulp-util';
+import readline from 'readline';
+import streamifier from 'streamifier';
+import streamToBuffer from 'stream-to-buffer';
 
 const PLUGIN_NAME = 'gulp-sass-import-once';
 const IMPORT_RE = /^([ \t]*(?:\/\*.*)?)@import\s+["']([^"']+(?:\.scss|\.sass)?)["'];?([ \t]*(?:\/[/*].*)?)$/gm;
@@ -19,27 +22,82 @@ function execute(file, env, callback, options = {}) {
     ) :
     [];
 
-  const [newContents] = transform(
-    file.contents.toString('utf-8'),
+  const contents = streamifier.createReadStream(file.contents);
+  const imports = [];
+  const newContents = through();
+
+  traceFile(
+    contents,
     path.normalize(path.join(file.path), '/'),
+    newContents,
+    imports,
     includePaths,
-    callback
+    (err = null) => {
+      if (err !== null) {
+        callback(err);
+      }
+
+      newContents.end();
+    },
+    0
   );
 
-  file.contents = new Buffer(newContents);
-
-  callback(null, file);
+  streamToBuffer(newContents, (err, buffer) => {
+    file.contents = buffer;
+    callback(null, file);
+  });
 }
 
-function transform(contents, filename, includePaths, callback, imported = []) {
-  const searchBases = [path.dirname(filename), ...includePaths];
-  const lines = contents.split('\n').length;
+function traceFile(contents, filename, dest, imports, includePaths, callback, depth) {
+  let __lock = 0;
+  const __lockFn = [];
+  const __lockArgs = [];
+  const __lockObj = [];
 
-  for (let line = 0; line < lines; line++) {
-    const result = IMPORT_RE.exec(contents);
+  function lock_() {
+    __lock++;
+  }
+
+  function release_() {
+    __lock--;
+    if (__lock <= 0) {
+      __lock = 0;
+      while (__lockFn.length) {
+        __lockFn.shift().call(__lockObj.shift(), ...__lockArgs.shift());
+      }
+    }
+  }
+
+  function fn_(obj, fn, ...args) {
+    if (__lock) {
+      __lockObj.push(obj);
+      __lockFn.push(fn);
+      __lockArgs.push(args || []);
+    } else {
+      fn.call(obj, ...args);
+    }
+  }
+
+  const searchBases = [path.dirname(filename), ...includePaths];
+  const lineReader = readline.createInterface({
+    input: contents,
+  });
+
+  contents.on('end', () => {
+    lineReader.close();
+    fn_(null, callback);
+  });
+
+  let lineNum = 0;
+  lineReader.on('line', (line) => {
+    lineNum++;
+
+    const result = IMPORT_RE.exec(line);
+    IMPORT_RE.lastIndex = 0;
 
     if (result === null) {
-      continue;
+      fn_(dest, dest.write, line + '\n');
+      return;
     }
 
     const [fullMatch, startComment, importPath, endComment] = result;
@@ -96,42 +154,40 @@ function transform(contents, filename, includePaths, callback, imported = []) {
         }
 
         // Already imported, remove rule and continue
-        if (imported.indexOf(fullPath) > -1) {
-          contents = contents.replace(
-            fullMatch,
-            startComment + '/* ' + fullMatch + ' */' + endComment
-          );
+        if (imports.indexOf(fullPath) > -1) {
+          fn_(dest, dest.write, startComment + '/* ' + fullMatch + ' */' + endComment + '\n');
           continue;
         }
 
         // The import is ambiguous and could refer to multiple files
         if (alreadyFound) {
           callback(new gutil.PluginError(PLUGIN_NAME,
-            `Ambiguous import in ${filename} on line ${line + 1}. This could refer to either ${alreadyFound} or ${possibleMatches[i]}.`
+            `Ambiguous import in ${filename} on line ${lineNum}. This could refer to either ${alreadyFound} or ${possibleMatches[i]}.`
           ));
         }
 
         alreadyFound = possibleMatches[i];
 
-        imported.push(fullPath);
+        imports.push(fullPath);
 
-        const [importContent, importImports] = transform(
-          fs.readFileSync(fullPath, 'utf-8'),
+        lock_();
+
+        traceFile(
+          fs.createReadStream(fullPath),
           fullPath,
+          dest,
+          imports,
           includePaths,
-          callback,
-          imported
+          (err = null) => {
+            if (err !== null) {
+              callback(err);
+            }
+
+            release_();
+          },
+          depth + 1
         );
-
-        imported == importImports.reduce((coll, item) => {
-          coll.push(item);
-          return coll;
-        }, imported);
-
-        contents = contents.replace(fullMatch + '\n', startComment + importContent + endComment);
       }
     }
-  }
-
-  return [contents, imported];
+  });
 }
