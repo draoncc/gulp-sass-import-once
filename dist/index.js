@@ -24,6 +24,18 @@ var _gulpUtil = require('gulp-util');
 
 var _gulpUtil2 = _interopRequireDefault(_gulpUtil);
 
+var _readline = require('readline');
+
+var _readline2 = _interopRequireDefault(_readline);
+
+var _streamifier = require('streamifier');
+
+var _streamifier2 = _interopRequireDefault(_streamifier);
+
+var _streamToBuffer = require('stream-to-buffer');
+
+var _streamToBuffer2 = _interopRequireDefault(_streamToBuffer);
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
 function _toConsumableArray(arr) { if (Array.isArray(arr)) { for (var i = 0, arr2 = Array(arr.length); i < arr.length; i++) { arr2[i] = arr[i]; } return arr2; } else { return Array.from(arr); } }
@@ -50,26 +62,82 @@ function execute(file, env, callback) {
     return _path2.default.normalize(_path2.default.join(process.cwd(), includePath));
   }) : [];
 
-  var _transform = transform(file.contents.toString('utf-8'), _path2.default.normalize(_path2.default.join(file.path), '/'), includePaths, callback),
-      _transform2 = _slicedToArray(_transform, 1),
-      newContents = _transform2[0];
+  var contents = _streamifier2.default.createReadStream(file.contents);
+  var imports = [];
+  var newContents = (0, _through2.default)();
 
-  file.contents = new Buffer(newContents);
+  traceFile(contents, _path2.default.normalize(_path2.default.join(file.path), '/'), newContents, imports, includePaths, function () {
+    var err = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : null;
 
-  callback(null, file);
+    if (err !== null) {
+      callback(err);
+    }
+
+    newContents.end();
+  }, 0);
+
+  (0, _streamToBuffer2.default)(newContents, function (err, buffer) {
+    file.contents = buffer;
+    callback(null, file);
+  });
 }
 
-function transform(contents, filename, includePaths, callback) {
-  var imported = arguments.length > 4 && arguments[4] !== undefined ? arguments[4] : [];
+function traceFile(contents, filename, dest, imports, includePaths, callback, depth) {
+  var __lock = 0;
+  var __lockFn = [];
+  var __lockArgs = [];
+  var __lockObj = [];
+
+  function lock_() {
+    __lock++;
+  }
+
+  function release_() {
+    __lock--;
+    if (__lock <= 0) {
+      __lock = 0;
+      while (__lockFn.length) {
+        var _lockFn$shift;
+
+        (_lockFn$shift = __lockFn.shift()).call.apply(_lockFn$shift, [__lockObj.shift()].concat(_toConsumableArray(__lockArgs.shift())));
+      }
+    }
+  }
+
+  function fn_(obj, fn) {
+    for (var _len2 = arguments.length, args = Array(_len2 > 2 ? _len2 - 2 : 0), _key2 = 2; _key2 < _len2; _key2++) {
+      args[_key2 - 2] = arguments[_key2];
+    }
+
+    if (__lock) {
+      __lockObj.push(obj);
+      __lockFn.push(fn);
+      __lockArgs.push(args || []);
+    } else {
+      fn.call.apply(fn, [obj].concat(args));
+    }
+  }
 
   var searchBases = [_path2.default.dirname(filename)].concat(_toConsumableArray(includePaths));
-  var lines = contents.split('\n').length;
+  var lineReader = _readline2.default.createInterface({
+    input: contents
+  });
 
-  for (var line = 0; line < lines; line++) {
-    var result = IMPORT_RE.exec(contents);
+  contents.on('end', function () {
+    lineReader.close();
+    fn_(null, callback);
+  });
+
+  var lineNum = 0;
+  lineReader.on('line', function (line) {
+    lineNum++;
+
+    var result = IMPORT_RE.exec(line);
+    IMPORT_RE.lastIndex = 0;
 
     if (result === null) {
-      continue;
+      fn_(dest, dest.write, line + '\n');
+      return;
     }
 
     var _result = _slicedToArray(result, 4),
@@ -114,35 +182,33 @@ function transform(contents, filename, includePaths, callback) {
         }
 
         // Already imported, remove rule and continue
-        if (imported.indexOf(fullPath) > -1) {
-          contents = contents.replace(fullMatch, startComment + '/* ' + fullMatch + ' */' + endComment);
+        if (imports.indexOf(fullPath) > -1) {
+          fn_(dest, dest.write, startComment + '/* ' + fullMatch + ' */' + endComment + '\n');
           continue;
         }
 
         // The import is ambiguous and could refer to multiple files
         if (alreadyFound) {
-          callback(new _gulpUtil2.default.PluginError(PLUGIN_NAME, 'Ambiguous import in ' + filename + ' on line ' + (line + 1) + '. This could refer to either ' + alreadyFound + ' or ' + possibleMatches[_i] + '.'));
+          callback(new _gulpUtil2.default.PluginError(PLUGIN_NAME, 'Ambiguous import in ' + filename + ' on line ' + lineNum + '. This could refer to either ' + alreadyFound + ' or ' + possibleMatches[_i] + '.'));
         }
 
         alreadyFound = possibleMatches[_i];
 
-        imported.push(fullPath);
+        imports.push(fullPath);
 
-        var _transform3 = transform(_fs2.default.readFileSync(fullPath, 'utf-8'), fullPath, includePaths, callback, imported),
-            _transform4 = _slicedToArray(_transform3, 2),
-            importContent = _transform4[0],
-            importImports = _transform4[1];
+        lock_();
 
-        imported == importImports.reduce(function (coll, item) {
-          coll.push(item);
-          return coll;
-        }, imported);
+        traceFile(_fs2.default.createReadStream(fullPath), fullPath, dest, imports, includePaths, function () {
+          var err = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : null;
 
-        contents = contents.replace(fullMatch + '\n', startComment + importContent + endComment);
+          if (err !== null) {
+            callback(err);
+          }
+
+          release_();
+        }, depth + 1);
       }
     }
-  }
-
-  return [contents, imported];
+  });
 }
 module.exports = exports['default'];
