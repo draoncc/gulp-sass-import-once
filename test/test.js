@@ -41,7 +41,7 @@ describe('gulp-sass-import-once', () => {
 
   it('(scss) should throw an error due to ambiguous imports', (done) => {
     const expectedResult = [
-      'Ambiguous import in /home/draoncc/coding/node/gulp-sass-import-once/test/test-scss/error.scss on line 1. This ',
+      'Ambiguous import in ' + __dirname + '/test-scss/error.scss on line 1. This ',
       'could refer to either import/ambiguous.scss or import/_ambiguous.scss.',
     ].join('');
 
