@@ -1,2 +1,6 @@
 node_modules/
 .sass-cache/
+.idea/
+.DS_Store
+Thumbs.db
+npm-debug.log
