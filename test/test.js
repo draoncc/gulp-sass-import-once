@@ -73,4 +73,19 @@ describe('gulp-sass-import-once', () => {
             })
             .on('end', done);
   });
+
+  it('(scss) should be able to import files with names that contain dots', (done) => {
+    const expectedResult = [
+      'lib.plugin',
+    ].join('');
+
+    vinyl
+            .src(path.join(__dirname, '/test-scss/dottedFiles.scss'))
+            .pipe(sassImportOnce())
+            .on('data', (file) => {
+              const contents = file.contents.toString('utf-8').trim();
+              expect(contents).to.equal(expectedResult.trim());
+            })
+            .on('end', done);
+  });
 });
